@@ -1,3 +1,17 @@
+[toc]
+
+---
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1877,9 +1891,553 @@ join(tables: {cpu: cpu, mem: mem}, on: ["_time", "host"])
 
 
 
-# 示例
+# 案例
+
+## 概述
+
+使用oshi采集CPU数据，并保存至influxDB，再通过echart渲染
 
 
+
+
+
+## 安装依赖
+
+```xml
+        <dependency>
+            <groupId>com.github.oshi</groupId>
+            <artifactId>oshi-core</artifactId>
+            <version>6.4.4</version>
+        </dependency>
+```
+
+
+
+
+
+## 初始化oshi
+
+```java
+package mao.influxdbdemo.init;
+
+import lombok.extern.slf4j.Slf4j;
+import oshi.SystemInfo;
+import oshi.util.GlobalConfig;
+
+
+@Slf4j
+public class InitOshi
+{
+
+    /**
+     * 初始化oshi，并创建SystemInfo对象
+     */
+    public static final SystemInfo SYSTEM_INFO = initOshi();
+
+
+    private static SystemInfo initOshi()
+    {
+        // 全局配置属性
+        GlobalConfig.set(GlobalConfig.OSHI_OS_WINDOWS_LOADAVERAGE, true);
+        SystemInfo systemInfo = new SystemInfo();
+        log.info("初始化Oshi成功！");
+        return systemInfo;
+    }
+
+}
+```
+
+
+
+
+
+## 实体类CpuDomain
+
+```java
+package mao.influxdbdemo.entity;
+
+
+import lombok.*;
+import lombok.experimental.Accessors;
+import mao.influxdbdemo.enums.InfluxDBField;
+import mao.influxdbdemo.enums.InfluxDBMeasurement;
+
+import java.time.Instant;
+import java.util.List;
+
+
+@Data
+@ToString
+@NoArgsConstructor
+@AllArgsConstructor
+@Accessors(chain = true)
+public class CpuDomain
+{
+
+    /**
+     * cpu总数
+     */
+    private Integer cpuNum;
+    /**
+     * cpu信息
+     */
+    private List<CpuInfoDomain> cpuList;
+
+    @Data
+    @ToString
+    @NoArgsConstructor
+    @Accessors(chain = true)
+    @InfluxDBMeasurement(name = "cpuInfo")
+    public static class CpuInfoDomain
+    {
+
+        /**
+         * CPU频率（MHz）
+         */
+        @InfluxDBField
+        Integer cpuMhz;
+
+        /**
+         * 索引
+         */
+        @InfluxDBField(isTag = true)
+        Integer index;
+
+        /**
+         * CPU卖主
+         */
+        @InfluxDBField(isTag = true)
+        String cpuVendor;
+
+        /**
+         * CPU的类别，如：Celeron
+         */
+        @InfluxDBField(isTag = true)
+        String cpuModel;
+
+        /**
+         * CPU用户使用率
+         */
+        @InfluxDBField
+        Double cpuUser;
+
+        /**
+         * CPU系统使用率
+         */
+        @InfluxDBField
+        Double cpuSys;
+
+        /**
+         * CPU等待率
+         */
+        @InfluxDBField
+        Double cpuWait;
+
+        /**
+         * CPU错误率
+         */
+        @InfluxDBField
+        Double cpuNice;
+
+        /**
+         * CPU剩余率
+         */
+        @InfluxDBField
+        Double cpuIdle;
+
+        /**
+         * CPU使用率
+         */
+        @InfluxDBField
+        Double cpuCombined;
+
+        private Instant time;
+
+    }
+
+}
+```
+
+
+
+
+
+## 数据采集工具CpuUtils
+
+```java
+package mao.influxdbdemo.oshi;
+
+
+import lombok.extern.slf4j.Slf4j;
+
+import mao.influxdbdemo.entity.CpuDomain;
+import mao.influxdbdemo.init.InitOshi;
+import oshi.hardware.CentralProcessor;
+import oshi.hardware.CentralProcessor.TickType;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+
+@Slf4j
+public class CpuUtils extends InitOshi
+{
+
+
+    public static CpuDomain getCpuInfo()
+    {
+        try
+        {
+            CentralProcessor processor = SYSTEM_INFO.getHardware().getProcessor();
+            CentralProcessor.ProcessorIdentifier processorIdentifier = processor.getProcessorIdentifier();
+            String model = processorIdentifier.getName();
+            String vendor = processorIdentifier.getVendor();
+            int logicalProcessorCount = processor.getLogicalProcessorCount();
+            long[] currentFreq = processor.getCurrentFreq();
+            long[][] prevTicks = processor.getProcessorCpuLoadTicks();
+            // 休眠一秒
+            try
+            {
+                TimeUnit.SECONDS.sleep(1);
+            }
+            catch (InterruptedException e)
+            {
+                log.error("线程中断异常！", e);
+            }
+            long[][] ticks = processor.getProcessorCpuLoadTicks();
+            // 创建返回对象
+            CpuDomain cpuDomain = new CpuDomain();
+            List<CpuDomain.CpuInfoDomain> cpuInfoDomains = new ArrayList<>();
+            for (int cpu = 0; cpu < logicalProcessorCount; cpu++)
+            {
+
+                long user = ticks[cpu][TickType.USER.getIndex()] - prevTicks[cpu][TickType.USER.getIndex()];
+                long nice = ticks[cpu][TickType.NICE.getIndex()] - prevTicks[cpu][TickType.NICE.getIndex()];
+                long sys = ticks[cpu][TickType.SYSTEM.getIndex()] - prevTicks[cpu][TickType.SYSTEM.getIndex()];
+                long idle = ticks[cpu][TickType.IDLE.getIndex()] - prevTicks[cpu][TickType.IDLE.getIndex()];
+                long iowait = ticks[cpu][TickType.IOWAIT.getIndex()] - prevTicks[cpu][TickType.IOWAIT.getIndex()];
+                long irq = ticks[cpu][TickType.IRQ.getIndex()] - prevTicks[cpu][TickType.IRQ.getIndex()];
+                long softirq = ticks[cpu][TickType.SOFTIRQ.getIndex()] - prevTicks[cpu][TickType.SOFTIRQ.getIndex()];
+                long steal = ticks[cpu][TickType.STEAL.getIndex()] - prevTicks[cpu][TickType.STEAL.getIndex()];
+                long totalCpu = user + nice + sys + idle + iowait + irq + softirq + steal;
+
+                // 设置每一个cpu的信息
+                CpuDomain.CpuInfoDomain cpuInfoDomain = new CpuDomain.CpuInfoDomain();
+                // CPU的总量MHz
+                cpuInfoDomain.setCpuMhz((int) (currentFreq[cpu] / 1000000L));
+                // 获得CPU的类别，如：Celeron
+                cpuInfoDomain.setCpuModel(model);
+                // 获得CPU的卖主，如：Intel
+                cpuInfoDomain.setCpuVendor(vendor);
+                // 用户使用率
+                cpuInfoDomain.setCpuUser((double) user / (double) totalCpu);
+                // 系统使用率
+                cpuInfoDomain.setCpuSys((double) sys / (double) totalCpu);
+                // 当前等待率
+                cpuInfoDomain.setCpuWait((double) iowait / (double) totalCpu);
+                // 当前错误率
+                cpuInfoDomain.setCpuNice((double) nice / (double) totalCpu);
+                // 当前空闲率
+                cpuInfoDomain.setCpuIdle((double) idle / (double) totalCpu);
+                // 总的使用率
+                cpuInfoDomain.setCpuCombined((double) (user + sys) / (double) totalCpu);
+
+                cpuInfoDomains.add(cpuInfoDomain);
+            }
+            cpuDomain.setCpuNum(logicalProcessorCount).setCpuList(cpuInfoDomains);
+            return cpuDomain;
+        }
+        catch (Throwable e)
+        {
+            log.error(e.getMessage(), e);
+            return null;
+        }
+    }
+}
+```
+
+
+
+
+
+## CpuRunner
+
+```java
+package mao.influxdbdemo.runner;
+
+import com.influxdb.client.WriteApi;
+import lombok.SneakyThrows;
+import lombok.extern.slf4j.Slf4j;
+import mao.influxdbdemo.entity.CpuDomain;
+import mao.influxdbdemo.oshi.CpuUtils;
+import mao.influxdbdemo.service.InfluxDBService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+
+/**
+ * Project name(项目名称)：influxDB-demo
+ * Package(包名): mao.influxdbdemo.runner
+ * Class(类名): CpuRunner
+ * Author(作者）: mao
+ * Author QQ：1296193245
+ * GitHub：https://github.com/maomao124/
+ * Date(创建日期)： 2025/7/31
+ * Time(创建时间)： 16:09
+ * Version(版本): 1.0
+ * Description(描述)： 无
+ */
+
+@Slf4j
+@Component
+public class CpuRunner implements CommandLineRunner
+{
+
+    @Autowired
+    private InfluxDBService influxDBService;
+
+    @Override
+    public void run(String... args) throws Exception
+    {
+        log.info("CpuRunner run");
+
+        new Thread(new Runnable()
+        {
+            @SneakyThrows
+            @Override
+            public void run()
+            {
+                while (true)
+                {
+
+                    Thread.sleep(5000);
+                    CpuDomain cpuInfo = CpuUtils.getCpuInfo();
+                    if (cpuInfo != null)
+                    {
+                        List<CpuDomain.CpuInfoDomain> cpuList = cpuInfo.getCpuList();
+                        log.info("采集数据：");
+                        int index = 0;
+                        for (CpuDomain.CpuInfoDomain cpuInfoDomain : cpuList)
+                        {
+                            index++;
+                            cpuInfoDomain.setIndex(index);
+                            log.info("cpuInfoDomain:{}", cpuInfoDomain);
+                            influxDBService.write(cpuInfoDomain);
+                        }
+                    }
+
+                }
+
+            }
+        }).start();
+    }
+}
+```
+
+
+
+```sh
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=19, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.04695304695304695, cpuSys=0.04695304695304695, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.8901098901098901, cpuCombined=0.0939060939060939, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=20, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=21, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=22, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.016511867905056758, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.9834881320949432, cpuCombined=0.016511867905056758, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=23, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=24, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=25, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=26, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.047715736040609136, cpuSys=0.09543147208121827, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.8568527918781725, cpuCombined=0.1431472081218274, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=27, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.2967032967032967, cpuSys=0.3436563436563437, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.3126873126873127, cpuCombined=0.6403596403596403, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=28, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=29, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.109, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.891, cpuCombined=0.109, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=30, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=31, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:01.324  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=32, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : 采集数据：
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=1, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=2, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=3, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.09251968503937008, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.90748031496063, cpuCombined=0.09251968503937008, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=4, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=5, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.13877952755905512, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.8612204724409449, cpuCombined=0.13877952755905512, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=6, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=7, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.06200787401574803, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.937992125984252, cpuCombined=0.06200787401574803, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=8, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=9, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.047764227642276426, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.9522357723577236, cpuCombined=0.047764227642276426, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=10, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=11, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=12, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=13, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.016260162601626018, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.983739837398374, cpuCombined=0.016260162601626018, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=14, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.01524390243902439, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.9847560975609756, cpuCombined=0.01524390243902439, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=15, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=16, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=17, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=18, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.031, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.969, cpuCombined=0.031, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=19, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.031504065040650404, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.9684959349593496, cpuCombined=0.031504065040650404, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=20, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=21, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=22, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.016260162601626018, cpuSys=0.07926829268292683, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.8892276422764228, cpuCombined=0.09552845528455285, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=23, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.03248730964467005, cpuSys=0.14213197969543148, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.8253807106598985, cpuCombined=0.1746192893401015, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=24, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=25, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.016243654822335026, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.983756345177665, cpuCombined=0.016243654822335026, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=26, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=27, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.3842364532019704, cpuSys=0.13891625615763548, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.4768472906403941, cpuCombined=0.5231527093596059, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=28, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=29, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=30, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=31, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.03051181102362205, cpuSys=0.015748031496062992, cpuWait=0.0, cpuNice=0.0, cpuIdle=0.9537401574803149, cpuCombined=0.04625984251968504, time=null)
+2025-07-31 16:48:07.337  INFO 13456 --- [       Thread-1] mao.influxdbdemo.runner.CpuRunner        : cpuInfoDomain:CpuDomain.CpuInfoDomain(cpuMhz=0, index=32, cpuVendor=GenuineIntel, cpuModel=13th Gen Intel(R) Core(TM) i9-13900HX, cpuUser=0.0, cpuSys=0.0, cpuWait=0.0, cpuNice=0.0, cpuIdle=1.0, cpuCombined=0.0, time=null)
+```
+
+
+
+
+
+
+
+## CpuInfoService
+
+```java
+package mao.influxdbdemo.service;
+
+import mao.influxdbdemo.entity.CpuDomain;
+
+import java.util.List;
+
+/**
+ * Project name(项目名称)：influxDB-demo
+ * Package(包名): mao.influxdbdemo.service
+ * Interface(接口名): CpuInfoService
+ * Author(作者）: mao
+ * Author QQ：1296193245
+ * GitHub：https://github.com/maomao124/
+ * Date(创建日期)： 2025/7/31
+ * Time(创建时间)： 16:24
+ * Version(版本): 1.0
+ * Description(描述)： 无
+ */
+
+public interface CpuInfoService
+{
+    /**
+     * 得到中央处理器信息
+     *
+     * @return {@link List }<{@link CpuDomain.CpuInfoDomain }>
+     */
+    List<CpuDomain.CpuInfoDomain> getCpuInfo();
+}
+```
+
+
+
+
+
+## CpuInfoServiceImpl
+
+```java
+package mao.influxdbdemo.service.impl;
+
+import lombok.extern.slf4j.Slf4j;
+import mao.influxdbdemo.entity.CpuDomain;
+import mao.influxdbdemo.entity.Temperature;
+import mao.influxdbdemo.service.CpuInfoService;
+import mao.influxdbdemo.service.InfluxDBService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+/**
+ * Project name(项目名称)：influxDB-demo
+ * Package(包名): mao.influxdbdemo.service.impl
+ * Class(类名): CpuInfoServiceImpl
+ * Author(作者）: mao
+ * Author QQ：1296193245
+ * GitHub：https://github.com/maomao124/
+ * Date(创建日期)： 2025/7/31
+ * Time(创建时间)： 16:25
+ * Version(版本): 1.0
+ * Description(描述)： 无
+ */
+
+@Slf4j
+@Service
+public class CpuInfoServiceImpl implements CpuInfoService
+{
+    @Autowired
+    private InfluxDBService influxDBService;
+
+    @Override
+    public List<CpuDomain.CpuInfoDomain> getCpuInfo()
+    {
+        String flux = """
+        from(bucket: "mao")
+                      |> range(start: -1h)
+                      |> filter(fn: (r) => r._measurement == "cpuInfo")
+                      |> sort(columns: ["_time"])
+    """;
+        return influxDBService.query(flux, CpuDomain.CpuInfoDomain.class);
+    }
+}
+```
+
+
+
+
+
+![image-20250731170433076](img/InfluxDB学习笔记/image-20250731170433076.png)
+
+
+
+
+
+
+
+
+
+## 页面展示
+
+![image-20250731170614830](img/InfluxDB学习笔记/image-20250731170614830.png)
+
+
+
+![image-20250731170658732](img/InfluxDB学习笔记/image-20250731170658732.png)
+
+
+
+
+
+![image-20250731170745964](img/InfluxDB学习笔记/image-20250731170745964.png)
+
+
+
+
+
+![image-20250731170850802](img/InfluxDB学习笔记/image-20250731170850802.png)
+
+
+
+
+
+![image-20250731171021972](img/InfluxDB学习笔记/image-20250731171021972.png)
+
+
+
+
+
+![image-20250731171035435](img/InfluxDB学习笔记/image-20250731171035435.png)
+
+
+
+
+
+![image-20250731171043615](img/InfluxDB学习笔记/image-20250731171043615.png)
+
+
+
+
+
+![image-20250731171443735](img/InfluxDB学习笔记/image-20250731171443735.png)
 
 
 
